@@ -279,7 +279,9 @@ class eBPFSimulator:
         # Decode based on instruction class
         if inst_class == 0x00:  # ALU/ALU64
             return self._decode_alu(op, src_reg, dst_reg, offset, imm)
-        elif inst_class == 0x01:  # ALU/ALU64 immediate
+        elif inst_class == 0x01:  # ALU immediate (32-bit)
+            return self._decode_alu_imm(op, src_reg, dst_reg, offset, imm)
+        elif inst_class == 0x07:  # ALU64 immediate (64-bit)
             return self._decode_alu_imm(op, src_reg, dst_reg, offset, imm)
         elif inst_class == 0x04:  # JMP
             return self._decode_jmp(op, src_reg, dst_reg, offset, imm)
@@ -538,7 +540,7 @@ class eBPFSimulator:
                 elif op == 0x90:  # MOD
                     if self.regs[src_reg] != 0:
                         self.regs[dst_reg] = (self.regs[dst_reg] % self.regs[src_reg]) & 0xFFFFFFFFFFFFFFFF
-                        updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
                 elif op == 0xa0:  # XOR
                     self.regs[dst_reg] = (self.regs[dst_reg] ^ self.regs[src_reg]) & 0xFFFFFFFFFFFFFFFF
                     updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
@@ -593,7 +595,52 @@ class eBPFSimulator:
                 elif op == 0x90:  # MOD
                     if imm != 0:
                         self.regs[dst_reg] = (self.regs[dst_reg] % imm) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0xa0:  # XOR
+                    self.regs[dst_reg] = (self.regs[dst_reg] ^ imm) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0xb0:  # MOV
+                    self.regs[dst_reg] = imm & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0xc0:  # ARSH
+                    val = self.regs[dst_reg]
+                    shift = imm & 0x3F
+                    if val & 0x8000000000000000:
+                        self.regs[dst_reg] = ((val >> shift) | ((0xFFFFFFFFFFFFFFFF << (64 - shift)) if shift > 0 else 0)) & 0xFFFFFFFFFFFFFFFF
+                    else:
+                        self.regs[dst_reg] = (val >> shift) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                    
+            elif inst_class == 0x07:  # ALU64 immediate (64-bit)
+                if op == 0x00:  # ADD
+                    self.regs[dst_reg] = (self.regs[dst_reg] + imm) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0x10:  # SUB
+                    self.regs[dst_reg] = (self.regs[dst_reg] - imm) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0x20:  # MUL
+                    self.regs[dst_reg] = (self.regs[dst_reg] * imm) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0x30:  # DIV
+                    if imm != 0:
+                        self.regs[dst_reg] = (self.regs[dst_reg] // imm) & 0xFFFFFFFFFFFFFFFF
                         updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0x40:  # OR
+                    self.regs[dst_reg] = (self.regs[dst_reg] | imm) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0x50:  # AND
+                    self.regs[dst_reg] = (self.regs[dst_reg] & imm) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0x60:  # LSH
+                    self.regs[dst_reg] = (self.regs[dst_reg] << (imm & 0x3F)) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0x70:  # RSH
+                    self.regs[dst_reg] = (self.regs[dst_reg] >> (imm & 0x3F)) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
+                elif op == 0x90:  # MOD
+                    if imm != 0:
+                        self.regs[dst_reg] = (self.regs[dst_reg] % imm) & 0xFFFFFFFFFFFFFFFF
+                    updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
                 elif op == 0xa0:  # XOR
                     self.regs[dst_reg] = (self.regs[dst_reg] ^ imm) & 0xFFFFFFFFFFFFFFFF
                     updates.append(f"r{dst_reg}=0x{self.regs[dst_reg]:016X}")
@@ -815,14 +862,14 @@ class eBPFSimulator:
                 # Decode instruction
                 asm = self.decode_instruction(inst_bytes, addr)
                 
-                # Format instruction bytes
-                inst_hex = inst_bytes.hex().upper()
+                # Format instruction bytes (MSB:LSB order)
+                inst_hex = inst_bytes[::-1].hex().upper()
                 
                 # Execute instruction
                 update_str = self.execute_instruction(inst_bytes, addr)
                 
                 # Write trace line
-                trace_line = f"0x{addr:08X};0x{inst_hex};{asm}"
+                trace_line = f"0x{addr:016X};0x{inst_hex};{asm}"
                 if update_str:
                     trace_line += f";{update_str}"
                 print(trace_line, file=out)
